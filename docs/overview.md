@@ -79,6 +79,10 @@ v12 and the v0.13 release-candidate cleanup add release-readiness polish:
 - Generated `outputs/`, `checkpoints/`, caches, and local benchmark files are release artifacts, not source files.
 - Public benchmark wording stays conservative: CIFAR recipes are smoke/benchmark paths, optimizer stress tests are synthetic diagnostics, and effective bits are entropy metrics rather than hardware compression claims.
 
+## Paper note
+
+The arXiv-style research note lives in `paper/main.tex`, with build instructions in `paper/README.md`. It derives the ternary entropy/effective-bit formulation, explains sparse-branch zero-ratio targeting, describes Chimera21 directional agreement, and records the current CIFAR-10 smoke benchmark tables.
+
 ## Effective bits
 
 `effective_bits` is Shannon entropy over the observed ternary weight distribution:

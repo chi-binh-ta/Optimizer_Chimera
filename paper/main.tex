@@ -1,0 +1,252 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{definition}{Definition}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\sgn}{\operatorname{sign}}
+\newcommand{\clip}{\operatorname{clip}}
+
+\title{Optimizer Chimera: Ternary Geometry and Effective-Bit Control in Quantized ResNet Training}
+\author{Optimizer Chimera Project}
+\date{v0.13 Release Candidate}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Optimizer Chimera is a research benchmark harness for studying ternary quantization, Chimera21 directional optimizer dynamics, effective-bit control, and robustness diagnostics. The core mathematical object is a ternary weight distribution over $\{-1,0,+1\}$, whose effective bits are measured by the entropy of the observed ternary distribution rather than by hardware storage compression. The current experiments are short CIFAR-10 GPU smoke runs, not paper-scale benchmark claims. Across strict BitNet-style and Chimera-controlled ternary ResNet-20 smoke runs, Chimera exposes a controllable trade-off between zero ratio, effective bitwidth, and loss.
+\end{abstract}
+
+\section{Introduction}
+
+Quantized neural networks often focus on discrete weight alphabets. In the ternary case, weights are constrained to $\{-1,0,+1\}$, introducing both sign structure and sparsity. A useful research question is not only which quantized model wins, but whether one can control the distributional geometry of ternary weights. Optimizer Chimera studies this question through ternary \texttt{BitLinear} and \texttt{BitConv2d} modules, the Chimera21 optimizer, an effective-bit and zero-ratio controller, a ResNet/CIFAR benchmark harness, and optimizer robustness diagnostics.
+
+This note makes six contributions:
+\begin{enumerate}
+    \item C1. An entropy/effective-bit formulation of ternary weight states.
+    \item C2. A sparse-branch target-zero-ratio derivation for a fixed entropy target.
+    \item C3. A Chimera quantization mechanism in which alpha controls ternary sparsity.
+    \item C4. Chimera21, a directional agreement gate on Adam-like update dynamics.
+    \item C5. Robustness diagnostics for double-adaptation collision, memory overhead, and zero-gradient behavior.
+    \item C6. A first controlled CIFAR-10 smoke benchmark over seeds $7,8,9$.
+\end{enumerate}
+
+The scope is deliberately conservative. The experiments below are intended to validate benchmark plumbing and controllability, not to establish state-of-the-art performance or superiority over Adam, BitNet, or full-precision ResNets.
+
+\section{Mathematical Starting Point: Ternary Geometry}
+
+\begin{definition}[Ternary weight state]
+Let $q=(q_i)_{i=1}^N$ be a quantized weight vector with
+\[
+q_i \in \{-1,0,+1\}.
+\]
+Define empirical ternary probabilities
+\[
+p_-=\frac{\#\{i:q_i=-1\}}{N},\quad
+p_0=\frac{\#\{i:q_i=0\}}{N},\quad
+p_+=\frac{\#\{i:q_i=+1\}}{N}.
+\]
+\end{definition}
+
+\begin{definition}[Effective bitwidth]
+The effective bitwidth of $q$ is the Shannon entropy of its empirical ternary distribution:
+\[
+H(q)
+=-p_-\log_2 p_- - p_0\log_2 p_0 - p_+\log_2 p_+,
+\]
+with the convention $0\log 0=0$.
+\end{definition}
+
+\begin{proposition}
+For a ternary distribution, $H(q)\leq \log_2(3)$, with equality at
+\[
+p_-=p_0=p_+=\frac{1}{3}.
+\]
+\end{proposition}
+
+\begin{proof}
+The entropy of a probability distribution on a finite alphabet of size $K$ is maximized by the uniform distribution. Here $K=3$, so the maximum value is $\log_2(3)$, attained when all three ternary symbols have probability $1/3$.
+\end{proof}
+
+Numerically, $\log_2(3)\approx 1.585$. Effective bits near $1.58$ therefore correspond to a high-entropy, balanced ternary usage pattern. This is an entropy/effective-bit measure of the observed ternary distribution, not a guarantee of hardware storage compression.
+
+\section{Symmetric Sparse Branch}
+
+Assume symmetric nonzero signs:
+\[
+p_+=p_-=\frac{1-p_0}{2}.
+\]
+Then effective bits become a one-dimensional function of the zero ratio:
+\[
+H(p_0)
+=-p_0\log_2 p_0
+-(1-p_0)\log_2\left(\frac{1-p_0}{2}\right).
+\]
+
+\begin{proposition}
+Under the symmetric-sign assumption, the target equation
+\[
+H(p_0)=h
+\]
+can have two solutions for certain $h$: a dense branch with small $p_0$ and a sparse branch with large $p_0$.
+\end{proposition}
+
+\begin{proof}
+Under the symmetric-sign assumption,
+\[
+H(p_0)= -p_0\log_2 p_0 -(1-p_0)\log_2(1-p_0)+(1-p_0).
+\]
+Its derivative is
+\[
+H'(p_0)=\log_2\left(\frac{1-p_0}{p_0}\right)-1.
+\]
+Thus $H'(p_0)=0$ at $p_0=1/3$, the function increases on the dense side and decreases on the sparse side. Since $H(0)=1$, $H(1/3)=\log_2(3)$, and $H(1)=0$, target entropies in the appropriate range intersect the curve on two branches.
+\end{proof}
+
+For \texttt{target\_bits} $=1.32$, Optimizer Chimera uses the sparse branch, giving
+\[
+p_0 \approx 0.63038.
+\]
+The $1.58$-bit profile is an information-preserving, high-entropy ternary regime. The $1.32$-bit profile is a sparsity-oriented regime.
+
+\section{Chimera Quantization Mechanism}
+
+Optimizer Chimera separates quantizer effect from optimizer effect. The strict BitNet-style baseline maps a full-precision tensor $U$ to a ternary tensor by
+\[
+q_{\mathrm{strict}}=\clip\left(\operatorname{round}\left(\frac{U}{\gamma}\right),-1,1\right),
+\]
+where $\gamma$ is a positive scale. Chimera thresholding instead uses
+\[
+q_{\mathrm{chimera}}
+=\sgn(U)\,\mathbf{1}\{|U|>\alpha\gamma\}.
+\]
+Larger $\alpha$ tends to increase the zero ratio. The target controller observes the global zero ratio and adjusts either \texttt{alpha\_target} or \texttt{alpha\_override}.
+
+\paragraph{Algorithm 1: Effective-bit sparse-branch control.}
+\begin{center}
+\begin{tabular}{p{0.92\textwidth}}
+\toprule
+\textbf{Input:} target bits $h$, branch $=$ ``sparse''.\\
+1. Solve $H(p_0)=h$ on the sparse branch to obtain the target zero ratio.\\
+2. Measure current zero ratio $z_t$.\\
+3. Compute $e_t=\texttt{target\_zero\_ratio}-z_t$.\\
+4. If $e_t>0$, increase $\alpha$; if $e_t<0$, decrease $\alpha$.\\
+5. Log zero ratio, effective bits, plus ratio, and minus ratio.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Chimera21 Optimizer}
+
+Chimera21 owns the optimizer effect. Let $g_t$ denote the stochastic gradient at step $t$. The optimizer maintains a first moment $m_t$, second moment $v_t$, and directional agreement memory $\psi_t$:
+\begin{align}
+m_t &= \beta_1 m_{t-1} + (1-\beta_1)g_t,\\
+v_t &= \beta_2 v_{t-1} + (1-\beta_2)g_t^2,\\
+\mathrm{agreement}_t &= \sgn(m_t)\sgn(g_t),\\
+\psi_t &= \rho_\psi \psi_{t-1} + (1-\rho_\psi)\mathrm{agreement}_t,\\
+\kappa_t &= \clip\left(\exp(\lambda_{\mathrm{gate}}\psi_t),\kappa_{\min},\kappa_{\max}\right).
+\end{align}
+With bias-corrected moments $\hat m_t$ and $\hat v_t$, the parameter update is
+\[
+\theta_{t+1}
+=\theta_t-\eta\,\kappa_t\,\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon}.
+\]
+If gradient and momentum agree, $\psi_t$ tends positive and $\kappa_t$ can increase the step. If they disagree, $\psi_t$ tends negative and $\kappa_t$ can damp the step. This is a directional consistency gate.
+
+\begin{proposition}
+If $\psi_t>0$ and $\lambda_{\mathrm{gate}}>0$ before clipping, then $\kappa_t>1$. If $\psi_t<0$ before clipping, then $\kappa_t<1$.
+\end{proposition}
+
+\begin{proof}
+The exponential function is strictly increasing. Therefore $\exp(\lambda_{\mathrm{gate}}\psi_t)>1$ when $\psi_t>0$ and $\lambda_{\mathrm{gate}}>0$, and it is below $1$ when $\psi_t<0$, before the clipping operation is applied.
+\end{proof}
+
+\section{Robustness Diagnostics}
+
+The robustness branch addresses three blind spots. First, Adam already adapts updates through $\sqrt{\hat v_t}$, while Chimera also adapts through $\kappa_t$; this can create a double-adaptation collision. Second, Chimera21 adds $\psi_t$ beyond Adam's $m_t$ and $v_t$, increasing optimizer state memory. Third, sparse or dead-gradient regimes can make $\sgn(0)=0$ erase directional information.
+
+The v10/v11 diagnostics include \texttt{collision\_score}, \texttt{mean\_noise\_ratio}, \texttt{active\_mean\_effective\_lr}, \texttt{zero\_grad\_policy} variants (\texttt{standard}, \texttt{freeze}, \texttt{decay}, \texttt{inertia}), \texttt{kappa\_gate\_mode} variants (\texttt{none}, \texttt{noise\_ratio}), \texttt{psi\_storage} variants (\texttt{fp32}, \texttt{int8}), \texttt{optimizer\_state\_bytes}, \texttt{psi\_state\_bytes}, \texttt{psi\_memory\_ratio\_vs\_fp32}, and \texttt{step\_time\_ms}. These are synthetic pressure tests, not real-world superiority claims.
+
+\section{CIFAR-10 Experimental Setup}
+
+The smoke experiments use CIFAR-10 \cite{krizhevsky2009cifar}, a ResNet-20-style \texttt{ChimeraResNet20} model inspired by residual networks \cite{he2016resnet}, and a Colab CUDA GPU. The seeds are $7,8,9$. Each quantized run uses $500$ update steps, $5$ epochs, \texttt{max\_batches} $=100$, \texttt{eval\_max\_batches} $=20$, batch size $64$, evaluation batch size $128$, and learning rate $0.001$.
+
+The compared quantized modes are:
+\begin{itemize}
+    \item \texttt{strict\_bitnet}: strict ternary baseline.
+    \item \texttt{chimera\_balanced}: \texttt{target\_bits} $=1.58$, epoch-level controller.
+    \item \texttt{chimera\_sparse}: \texttt{target\_bits} $=1.32$, batch-level controller.
+\end{itemize}
+A full-precision baseline was also run for seed $7$ as an upper baseline with final evaluation loss $1.503039$. Quantized modes are not expected to match full precision in this short smoke setting.
+
+\section{Results}
+
+\begin{table}[t]
+\centering
+\caption{Per-seed CIFAR-10 smoke results. These are short smoke runs, not paper-scale benchmark claims.}
+\label{tab:per_seed}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrr}
+\toprule
+Mode & Seed & Final train loss & Final eval loss & Zero ratio & Effective bits\\
+\midrule
+\texttt{strict\_bitnet} & 7 & 2.194830 & 2.187004 & 0.249539 & 1.561006\\
+\texttt{strict\_bitnet} & 8 & 2.220641 & 2.222555 & 0.249985 & 1.561269\\
+\texttt{strict\_bitnet} & 9 & 2.233689 & 2.220956 & 0.250247 & 1.561422\\
+\texttt{chimera\_balanced} & 7 & 2.182700 & 2.178553 & 0.375487 & 1.579305\\
+\texttt{chimera\_balanced} & 8 & 2.247449 & 2.245713 & 0.374557 & 1.579549\\
+\texttt{chimera\_balanced} & 9 & 2.251470 & 2.244405 & 0.375373 & 1.579335\\
+\texttt{chimera\_sparse} & 7 & 2.246470 & 2.235669 & 0.625712 & 1.328189\\
+\texttt{chimera\_sparse} & 8 & 2.244565 & 2.241072 & 0.625037 & 1.329363\\
+\texttt{chimera\_sparse} & 9 & 2.239646 & 2.237456 & 0.624516 & 1.330272\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Summary of CIFAR-10 smoke results over seeds $7,8,9$.}
+\label{tab:summary}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrr}
+\toprule
+Mode & Eval loss mean $\pm$ std & Train loss mean $\pm$ std & Zero ratio mean $\pm$ std & Effective bits mean $\pm$ std\\
+\midrule
+\texttt{strict\_bitnet} & 2.2102 $\pm$ 0.0201 & 2.2164 $\pm$ 0.0198 & 0.2499 $\pm$ 0.0004 & 1.5612 $\pm$ 0.0002\\
+\texttt{chimera\_balanced} & 2.2229 $\pm$ 0.0384 & 2.2272 $\pm$ 0.0386 & 0.3751 $\pm$ 0.0005 & 1.5794 $\pm$ 0.0001\\
+\texttt{chimera\_sparse} & 2.2381 $\pm$ 0.0028 & 2.2436 $\pm$ 0.0035 & 0.6251 $\pm$ 0.0006 & 1.3293 $\pm$ 0.0010\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\section{Interpretation}
+
+Strict BitNet has the best mean evaluation loss among the three quantized modes in this short run. Chimera balanced increases zero ratio from about $0.25$ to about $0.375$ while remaining close in evaluation loss. Chimera sparse reaches approximately $1.329$ effective bits and zero ratio around $0.625$ with very low variation across seeds. The strongest evidence is controllability of the sparsity/effective-bit trade-off.
+
+\section{Pareto-Style Discussion}
+
+The observed regimes form a small frontier. The strict BitNet baseline has lower loss and lower sparsity. Chimera balanced has higher sparsity with nearby loss. Chimera sparse has much higher sparsity, higher loss, and stable target control. The practical value of Chimera is not currently a dominance claim, but the ability to expose a tunable frontier between entropy, sparsity, and loss.
+
+\section{Limitations}
+
+The experiments are smoke-scale only. Five hundred update steps is short, and no full CIFAR training schedule is used. The runs do not include learning-rate tuning, accuracy tables, rigorous GPU runtime profiling, or rigorous memory profiling. Effective bits are entropy of ternary weights, not hardware compression. Robustness diagnostics are synthetic and should be interpreted as pressure tests rather than real-world superiority evidence.
+
+\section{Conclusion}
+
+Optimizer Chimera provides a mathematical and experimental harness for studying ternary effective-bit control. Current experiments support a controllable trade-off, especially stable sparse-branch targeting near $1.33$ effective bits. Future work should extend to longer schedules, more seeds, accuracy reporting, tuned learning rates, and hardware-aware profiling.
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

@@ -1,0 +1,4 @@
+mode,eval_loss_mean,eval_loss_std,train_loss_mean,train_loss_std,zero_ratio_mean,zero_ratio_std,effective_bits_mean,effective_bits_std
+strict_bitnet,2.2102,0.0201,2.2164,0.0198,0.2499,0.0004,1.5612,0.0002
+chimera_balanced,2.2229,0.0384,2.2272,0.0386,0.3751,0.0005,1.5794,0.0001
+chimera_sparse,2.2381,0.0028,2.2436,0.0035,0.6251,0.0006,1.3293,0.0010

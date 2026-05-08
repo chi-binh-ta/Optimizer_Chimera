@@ -115,6 +115,26 @@ Release and Colab notes live in:
 
 Generated `outputs/`, `checkpoints/`, caches, and local logs should not be committed. Use `python scripts/clean_artifacts.py` before release cleanup.
 
+## Paper-style research note
+
+A LaTeX research note is available under `paper/`. It derives the ternary effective-bit objective, explains Chimera21 directional agreement, and summarizes the first CIFAR-10 smoke benchmark.
+
+Build from `paper/` with:
+
+```powershell
+pdflatex main.tex
+bibtex main
+pdflatex main.tex
+pdflatex main.tex
+```
+
+Or, where `make` is available:
+
+```powershell
+cd paper
+make
+```
+
 ## CIFAR-10 recipes
 
 Synthetic smoke, no CIFAR or torchvision required:
