@@ -1,0 +1,41 @@
+lr: 0.001
+beta1: 0.9
+beta2: 0.999
+eps_opt: 1.0e-8
+weight_decay: 0.0
+stat_mode: mean
+rho_s: 0.95
+rho_psi: 0.95
+lambda_gate: 0.1
+kappa_min: 0.5
+kappa_max: 2.0
+log_diagnostics: false
+zero_grad_policy: standard
+idle_decay: 0.95
+kappa_gate_mode: none
+noise_threshold: 2.0
+gate_sharpness: 4.0
+psi_storage: fp32
+alpha_min: 0.0
+alpha_target: 0.7
+warmup_steps: 100
+target_bits: 1.32
+target_branch: sparse
+target_bits_controller:
+  tolerance: 0.02
+  step_size: 0.05
+  alpha_max: 1.5
+ste_clip: 1.0
+quant_mode: chimera
+quant_modes:
+  - strict_bitnet
+  - chimera
+eps_gamma: 1.0e-6
+eps_beta: 1.0e-6
+benchmark:
+  steps: 8
+  seeds: 3
+  batch_size: 16
+  in_features: 8
+  out_features: 4
+  log_dir: outputs
