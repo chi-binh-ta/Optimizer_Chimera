@@ -91,3 +91,69 @@ def test_alternating_gradient_does_not_create_false_confidence() -> None:
         p.grad = torch.tensor([1.0 if step % 2 == 0 else -1.0])
         opt.step()
     assert abs(float(opt.state[p]["psi"].item())) < 0.1
+
+
+def test_p26_local_exposure_is_bounded_by_half() -> None:
+    grad = torch.tensor([1.0, 1.0, 1.0])
+    param = torch.tensor([0.0, 1.0, 10.0])
+    m_hat = torch.ones(3)
+    sqrt_v_hat = torch.ones(3)
+    d = torch.ones(3)
+    base_step = 0.1 * d.abs()
+    exposure = base_step / (param.abs() + 2.0 * base_step + 1.0e-8)
+    trust = _step_trust_statistic(
+        grad=grad,
+        param=param,
+        m_hat=m_hat,
+        sqrt_v_hat=sqrt_v_hat,
+        d=d,
+        lr=0.1,
+        eps_opt=1.0e-8,
+        exposure_mode="local_capped",
+    )
+    assert torch.all(exposure >= 0.0)
+    assert torch.all(exposure <= 0.5 + 1.0e-7)
+    assert torch.all(trust >= -1.0)
+    assert torch.all(trust <= 1.0)
+
+
+def test_p26_zero_parameter_coherent_step_is_neutral() -> None:
+    trust = _step_trust_statistic(
+        grad=torch.tensor([1.0]),
+        param=torch.tensor([0.0]),
+        m_hat=torch.tensor([1.0]),
+        sqrt_v_hat=torch.tensor([1.0]),
+        d=torch.tensor([1.0]),
+        lr=0.1,
+        eps_opt=1.0e-8,
+        exposure_mode="local_capped",
+    )
+    assert abs(float(trust.item())) < 1.0e-6
+
+
+def test_p26_adds_no_persistent_state() -> None:
+    p_raw = torch.nn.Parameter(torch.ones(16))
+    p_p26 = torch.nn.Parameter(torch.ones(16))
+    raw = Chimera21([p_raw])
+    p26 = Chimera21([p_p26], trust_mode="step_trust_local")
+    p_raw.grad = torch.ones_like(p_raw)
+    p_p26.grad = torch.ones_like(p_p26)
+    raw.step()
+    p26.step()
+    assert optimizer_state_memory_summary(raw) == optimizer_state_memory_summary(p26)
+
+
+def test_p26_alternating_gradient_does_not_saturate_false_confidence() -> None:
+    p = torch.nn.Parameter(torch.tensor([1.0]))
+    opt = Chimera21(
+        [p],
+        lr=1.0e-3,
+        beta1=0.9,
+        beta2=0.999,
+        rho_psi=0.95,
+        trust_mode="step_trust_local",
+    )
+    for step in range(200):
+        p.grad = torch.tensor([1.0 if step % 2 == 0 else -1.0])
+        opt.step()
+    assert abs(float(opt.state[p]["psi"].item())) < 0.1
