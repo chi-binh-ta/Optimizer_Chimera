@@ -11,7 +11,7 @@ import yaml
 ZERO_GRAD_POLICIES = ("standard", "freeze", "decay", "inertia")
 KAPPA_GATE_MODES = ("none", "noise_ratio")
 PSI_STORAGE_MODES = ("fp32", "int8")
-TRUST_MODES = ("raw_agreement", "step_trust")
+TRUST_MODES = ("raw_agreement", "step_trust", "step_trust_local")
 
 
 def _apply_kappa_gate(kappa_raw: torch.Tensor, noise_ratio: torch.Tensor, *, mode: str, noise_threshold: float, gate_sharpness: float) -> torch.Tensor:
@@ -33,15 +33,25 @@ def _dequantize_psi(psi: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
     return psi
 
 
-def _step_trust_statistic(*, grad: torch.Tensor, param: torch.Tensor, m_hat: torch.Tensor, sqrt_v_hat: torch.Tensor, d: torch.Tensor, lr: float, eps_opt: float) -> torch.Tensor:
-    """Bounded P-2 step-trust statistic in [-1, 1] with no persistent state."""
+def _step_trust_statistic(*, grad: torch.Tensor, param: torch.Tensor, m_hat: torch.Tensor, sqrt_v_hat: torch.Tensor, d: torch.Tensor, lr: float, eps_opt: float, exposure_mode: str = "tensor_mean") -> torch.Tensor:
+    """Bounded step-trust statistic in [-1, 1] with no persistent state.
+
+    ``tensor_mean`` is the P-2.5 exposure using mean(abs(param)).
+    ``local_capped`` is P-2.6: reduction-free, scale-relative, and bounded by 1/2.
+    """
     coherence = (m_hat.abs() / (sqrt_v_hat + eps_opt)).clamp_(0.0, 1.0)
     direction = torch.sign(grad * d)
-    param_scale = param.detach().abs().mean()
     base_step = lr * d.abs()
-    exposure = base_step / (param.detach().abs() + param_scale + base_step + eps_opt)
+    if exposure_mode == "tensor_mean":
+        param_scale = param.detach().abs().mean()
+        exposure = base_step / (param.detach().abs() + param_scale + base_step + eps_opt)
+    elif exposure_mode == "local_capped":
+        exposure = base_step / (param.detach().abs() + 2.0 * base_step + eps_opt)
+    else:
+        raise ValueError("exposure_mode must be 'tensor_mean' or 'local_capped'")
     trust = direction * coherence.square() * (1.0 - exposure) - exposure
     trust = trust.clamp_(-1.0, 1.0)
+    # Preserve current zero-gradient policy semantics: raw agreement is 0 at g=0.
     return torch.where(grad == 0, torch.zeros_like(trust), trust)
 
 
@@ -113,8 +123,10 @@ class Chimera21(torch.optim.Optimizer):
                 zero_mask=(grad==0 if zero_grad_policy!="standard" or diagnostics_enabled else None)
                 if trust_mode == "raw_agreement":
                     trust = torch.sign(m)*torch.sign(grad)
+                elif trust_mode == "step_trust":
+                    trust = _step_trust_statistic(grad=grad,param=p,m_hat=m_hat,sqrt_v_hat=sqrt_v_hat,d=d,lr=lr,eps_opt=eps_opt,exposure_mode="tensor_mean")
                 else:
-                    trust = _step_trust_statistic(grad=grad,param=p,m_hat=m_hat,sqrt_v_hat=sqrt_v_hat,d=d,lr=lr,eps_opt=eps_opt)
+                    trust = _step_trust_statistic(grad=grad,param=p,m_hat=m_hat,sqrt_v_hat=sqrt_v_hat,d=d,lr=lr,eps_opt=eps_opt,exposure_mode="local_capped")
                 if zero_grad_policy=="standard" or zero_mask is None:
                     psi.mul_(rho_psi).add_(trust,alpha=1.0-rho_psi)
                 else:
