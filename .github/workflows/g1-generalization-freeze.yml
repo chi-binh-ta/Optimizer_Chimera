@@ -1,0 +1,41 @@
+name: G-1 Generalization Freeze Audit
+
+on:
+  push:
+    branches:
+      - chimera-p2-5-step-trust
+    paths:
+      - experiments/run_g1_generalization_freeze.py
+      - .github/workflows/g1-generalization-freeze.yml
+  workflow_dispatch:
+
+jobs:
+  g1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install torchvision scipy
+
+      - name: Run frozen G-1 audit
+        run: python experiments/run_g1_generalization_freeze.py
+
+      - name: Upload G-1 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-generalization-freeze
+          path: outputs/g1/
+          if-no-files-found: warn
